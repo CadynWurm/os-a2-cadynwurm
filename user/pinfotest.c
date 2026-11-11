@@ -1,4 +1,3 @@
-
 #include "kernel/types.h"
 #include "kernel/pinfo.h"
 #include "user/user.h"
@@ -6,13 +5,13 @@
 int
 main(void)
 {
-  struct pinfo info[64];
+  struct pinfo info[16];
   int count;
   int pid = getpid();
   int initial_ticks = -1;
   int initial_sched = -1;
 
-  count = getpinfo(info, 64);
+  count = getpinfo(info, 16);
 
   if (count < 0) {
     printf("FAIL: getpinfo returned -1\n");
@@ -49,7 +48,7 @@ main(void)
   for (unsigned long i = 0; i < 100000000UL; i++)
     x += i;
 
-  count = getpinfo(info, 64);
+  count = getpinfo(info, 16);
 
   if (count < 0) {
     printf("FAIL: Second getpinfo call failed\n");
@@ -92,10 +91,58 @@ main(void)
   else
     printf("FAIL: Zero max handled incorrectly\n");
 
-  if (getpinfo((struct pinfo *)0, 64) == -1)
+  if (getpinfo((struct pinfo *)0, 16) == -1)
     printf("PASS: Invalid buffer rejected\n");
   else
     printf("FAIL: Invalid buffer accepted\n");
+
+  int child = fork();
+
+  if (child < 0) {
+    printf("FAIL: fork failed\n");
+    exit(1);
+  }
+
+  if (child == 0) {
+    struct pinfo childinfo[16];
+    int n = getpinfo(childinfo, 16);
+    int found = 0;
+
+    if (n < 0) {
+      printf("FAIL: Child getpinfo failed\n");
+      exit(1);
+    }
+
+    for (int i = 0; i < n; i++) {
+      if (childinfo[i].pid == getpid()) {
+        found = 1;
+
+        if (childinfo[i].level == 0)
+          printf("PASS: Child starts at level 0\n");
+        else
+          printf("FAIL: Child starts at level %d\n", childinfo[i].level);
+
+        if (childinfo[i].runticks == 0)
+          printf("PASS: Child starts with zero runticks\n");
+        else
+          printf("INFO: Child has %d runticks\n", childinfo[i].runticks);
+
+        if (childinfo[i].nsched >= 1 && childinfo[i].nsched <= 2)
+          printf("PASS: Child starts with fresh scheduling count\n");
+        else
+          printf("FAIL: Child nsched is %d\n", childinfo[i].nsched);
+
+        break;
+      }
+    }
+
+    if (!found)
+      printf("FAIL: Child process not found\n");
+
+    exit(0);
+  }
+
+  wait(0);
 
   exit(0);
 }
