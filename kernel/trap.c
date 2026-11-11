@@ -6,6 +6,8 @@
 #include "proc.h"
 #include "defs.h"
 
+extern struct proc proc[NPROC];
+
 struct spinlock tickslock;
 uint ticks;
 
@@ -82,13 +84,34 @@ usertrap(void)
   if (killed(p))
     kexit(-1);
 
-  // Count CPU time when a timer interrupt occurs.
-  if (which_dev == 2) {
-    acquire(&p->lock);       
-    p->runticks++;          
-    release(&p->lock);       
 
-    yield();
+// Count CPU time when a timer interrupt occurs.
+  if(which_dev == 2) {
+    int expired = 0;
+    int level;
+
+    acquire(&p->lock);
+
+    p->runticks++;
+    p->usedticks++;
+
+    int slice = 1 << p->level;
+
+    if(p->usedticks >= slice) {
+      expired = 1;
+
+      if(p->level < 3)
+        p->level++;
+
+      p->usedticks = 0;
+    }
+
+    level = p->level;
+
+    release(&p->lock);
+
+    if(expired || higher_priority_runnable(level))
+      yield();
   }
 
   prepare_return();
@@ -161,15 +184,37 @@ kerneltrap()
     panic("kerneltrap");
   }
 
-  // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2 && myproc() != 0) {
+// give up the CPU if this is a timer interrupt.
+  if(which_dev == 2 && myproc() != 0) {
     struct proc *p = myproc();
 
-    acquire(&p->lock);
-    p->runticks++;
-    release(&p->lock);
+    if(mycpu()->noff == 0) {
+      int expired = 0;
+      int level;
 
-    yield();
+      acquire(&p->lock);
+
+      p->runticks++;
+      p->usedticks++;
+
+      int slice = 1 << p->level;
+
+      if(p->usedticks >= slice) {
+        expired = 1;
+
+        if(p->level < 3)
+          p->level++;
+
+        p->usedticks = 0;
+      }
+
+      level = p->level;
+
+      release(&p->lock);
+
+      if(expired || higher_priority_runnable(level))
+        yield();
+    }
   }
 
   // the yield() may have caused some traps to occur,
@@ -178,7 +223,6 @@ kerneltrap()
   w_sstatus(sstatus);
 }
 
-
 void
 clockintr()
 {
@@ -186,6 +230,20 @@ clockintr()
     acquire(&tickslock);
     ticks++;
     wakeup(&ticks);
+
+    if (ticks % 64 == 0) {
+      for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+
+        if (p->state != UNUSED) {
+          p->level = 0;
+          p->usedticks = 0;
+        }
+
+        release(&p->lock);
+      }
+    }
+
     release(&tickslock);
   }
 

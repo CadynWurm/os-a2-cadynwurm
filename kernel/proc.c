@@ -1,3 +1,4 @@
+
 #include "types.h"
 #include "param.h"
 #include "memlayout.h"
@@ -10,6 +11,10 @@
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
+
+static int rr_cursor[4] = {0, 0, 0, 0};
+
+static struct spinlock rr_lock;
 
 struct proc *initproc;
 
@@ -54,6 +59,7 @@ procinit(void)
 
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
+  initlock(&rr_lock, "rr");
   for (p = proc; p < &proc[NPROC]; p++) {
     initlock(&p->lock, "proc");
     p->state = UNUSED;
@@ -440,6 +446,24 @@ kwait(uint64 addr)
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
 
+int
+higher_priority_runnable(int current_level)
+{
+  for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+
+    int higher = p->state == RUNNABLE && p->level < current_level;
+
+    release(&p->lock);
+
+    if (higher)
+      return 1;
+  }
+
+  return 0;
+}
+
+
 void
 scheduler(void)
 {
@@ -447,47 +471,52 @@ scheduler(void)
   struct cpu *c = mycpu();
 
   c->proc = 0;
+
   for (;;) {
-    // The most recent process to run may have had interrupts
-    // turned off; enable them to avoid a deadlock if all
-    // processes are waiting. Then turn them back off
-    // to avoid a possible race between an interrupt
-    // and wfi.
     intr_on();
-    intr_off();
 
     int found = 0;
-    for (p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if (p->state == RUNNABLE) {
-        // Switch to chosen process. It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
 
-        p->state = RUNNING;
-        c->proc = p;
+    acquire(&rr_lock);
 
-        // Count each time this process is scheduled.
-        p->nsched++;
+    for (int level = 0; level < 4 && !found; level++) {
+      int start = rr_cursor[level];
 
-        swtch(&c->context, &p->context);
+      for (int i = 0; i < NPROC; i++) {
+        int index = (start + i) % NPROC;
+        p = &proc[index];
 
-        // Don't re-enable interrupts on release.
-        mycpu()->intena = 0;
+        acquire(&p->lock);
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
+        if (p->state == RUNNABLE && p->level == level) {
+          rr_cursor[level] = (index + 1) % NPROC;
+
+          p->state = RUNNING;
+          c->proc = p;
+          p->nsched++;
+
+          release(&rr_lock);
+
+          swtch(&c->context, &p->context);
+
+          c->proc = 0;
+          found = 1;
+          release(&p->lock);
+          break;
+        }
+
+        release(&p->lock);
       }
-      release(&p->lock);
     }
-    if (found == 0) {
-      // nothing to run; stop running on this core until an interrupt.
+
+    if (!found) {
+      release(&rr_lock);
       asm volatile("wfi");
     }
   }
 }
+
+
 
 
 // Switch to scheduler.  Must hold only p->lock
@@ -753,16 +782,15 @@ getpinfo(uint64 buf, int max)
 
     release(&p->lock);
 
-if (copyout(current->pagetable,
-            current->sz,
-            buf + count * sizeof(struct pinfo),
-            (char *)&info,
-            sizeof(struct pinfo)) < 0)
-  return -1;
+    if (copyout(current->pagetable,
+                current->sz,
+                buf + count * sizeof(struct pinfo),
+                (char *)&info,
+                sizeof(struct pinfo)) < 0)
+      return -1;
 
     count++;
   }
 
   return count;
 }
-
