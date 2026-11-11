@@ -20,6 +20,8 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
+extern uint ticks;
+
 // helps ensure that wakeups of wait()ing
 // parents are not lost. helps obey the
 // memory model when using p->parent.
@@ -106,6 +108,7 @@ allocpid()
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
 // If there are no free procs, or a memory allocation fails, return 0.
+
 static struct proc *
 allocproc(void)
 {
@@ -124,6 +127,15 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+
+  // Initialize scheduling statistics
+  p->runticks = 0;
+  p->nsched = 0;
+  p->ctime = ticks;
+
+  // Initialize MLFQ scheduling information
+  p->level = 0;
+  p->usedticks = 0;
 
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
@@ -148,6 +160,7 @@ found:
 
   return p;
 }
+
 
 // free a proc structure and the data hanging from it,
 // including user pages.
@@ -425,6 +438,7 @@ kwait(uint64 addr)
 //  - swtch to start running that process.
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
+
 void
 scheduler(void)
 {
@@ -445,11 +459,16 @@ scheduler(void)
     for (p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if (p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
+        // Switch to chosen process. It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
+
         p->state = RUNNING;
         c->proc = p;
+
+        // Count each time this process is scheduled.
+        p->nsched++;
+
         swtch(&c->context, &p->context);
 
         // Don't re-enable interrupts on release.
@@ -468,6 +487,7 @@ scheduler(void)
     }
   }
 }
+
 
 // Switch to scheduler.  Must hold only p->lock
 // and have changed proc->state. Saves and restores

@@ -34,6 +34,7 @@ trapinithart(void)
 // called from, and returns to, trampoline.S
 // return value is user satp for trampoline.S to switch to.
 //
+
 uint64
 usertrap(void)
 {
@@ -81,9 +82,14 @@ usertrap(void)
   if (killed(p))
     kexit(-1);
 
-  // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2)
+  // Count CPU time when a timer interrupt occurs.
+  if (which_dev == 2) {
+    acquire(&p->lock);       
+    p->runticks++;          
+    release(&p->lock);       
+
     yield();
+  }
 
   prepare_return();
 
@@ -93,6 +99,7 @@ usertrap(void)
   // return to trampoline.S; satp value in a0.
   return satp;
 }
+
 
 //
 // set up trapframe and control registers for a return to user space
@@ -133,6 +140,7 @@ prepare_return(void)
 
 // interrupts and exceptions from kernel code go here via kernelvec,
 // on whatever the current kernel stack is.
+
 void
 kerneltrap()
 {
@@ -154,14 +162,22 @@ kerneltrap()
   }
 
   // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2 && myproc() != 0)
+  if (which_dev == 2 && myproc() != 0) {
+    struct proc *p = myproc();
+
+    acquire(&p->lock);
+    p->runticks++;
+    release(&p->lock);
+
     yield();
+  }
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
   w_sepc(sepc);
   w_sstatus(sstatus);
 }
+
 
 void
 clockintr()
